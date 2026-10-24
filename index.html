@@ -1,0 +1,1048 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>WebRTC File Share</title>
+<style>
+:root {
+  --bg: #1a1b1e;
+  --panel: #2b2d31;
+  --surface: #313338;
+  --border: #1f2023;
+  --text: #dbdee1;
+  --muted: #949ba4;
+  --accent: #5865f2;
+  --accent-hover: #4752c4;
+  --green: #23a55a;
+  --red: #f23f43;
+}
+* { box-sizing: border-box; }
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: var(--panel); }
+::-webkit-scrollbar-thumb { background: #1a1b1e; border-radius: 3px; }
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  margin: 0;
+  padding: 0;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+.app {
+  width: 100%;
+  max-width: 520px;
+  background: var(--panel);
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 24px rgba(0,0,0,.4);
+  overflow: hidden;
+  margin: 16px;
+}
+.header {
+  padding: 16px 20px;
+  border-bottom: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+.header h1 {
+  margin: 0;
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: #f2f3f5;
+}
+.status {
+  font-size: .75rem;
+  padding: 3px 10px;
+  border-radius: 10px;
+  font-weight: 500;
+  background: rgba(35,165,90,.15);
+  color: var(--green);
+}
+.status.waiting { background: rgba(88,101,242,.15); color: var(--accent); }
+.status.error { background: rgba(242,63,67,.15); color: var(--red); }
+.body { padding: 20px; }
+.section-title {
+  font-size: .75rem;
+  font-weight: 700;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: .5px;
+  margin-bottom: 8px;
+}
+.input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--text);
+  font-size: .9rem;
+  padding: 10px 12px;
+  outline: none;
+  margin-bottom: 12px;
+}
+.input:focus { border-color: var(--accent); }
+.btn {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 6px;
+  padding: 10px 16px;
+  font-size: .9rem;
+  font-weight: 500;
+  cursor: pointer;
+  width: 100%;
+  transition: background .2s;
+}
+.btn:hover { background: var(--accent-hover); }
+.btn:disabled {
+  background: #4e5058;
+  color: var(--muted);
+  cursor: not-allowed;
+}
+.btn-secondary {
+  background: #4e5058;
+  color: #fff;
+}
+.btn-secondary:hover { background: #6d6f78; }
+.btn-row { display: flex; gap: 8px; margin-top: 8px; }
+.btn-row .btn { flex: 1; }
+.hidden { display: none !important; }
+.file-drop {
+  border: 2px dashed #4e5058;
+  border-radius: 8px;
+  padding: 28px 16px;
+  text-align: center;
+  cursor: pointer;
+  transition: border-color .2s, background .2s;
+  margin-bottom: 12px;
+  color: var(--muted);
+}
+.file-drop:hover, .file-drop.dragover {
+  border-color: var(--accent);
+  background: rgba(88,101,242,.08);
+  color: var(--text);
+}
+.file-drop .name {
+  font-weight: 600;
+  color: #fff;
+  margin-top: 6px;
+  word-break: break-all;
+}
+.file-drop .meta { font-size: .8rem; margin-top: 4px; }
+.share-box {
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 14px;
+  margin-top: 12px;
+}
+.share-box .link {
+  font-family: monospace;
+  font-size: .8rem;
+  word-break: break-all;
+  color: var(--accent);
+  margin: 8px 0;
+  user-select: all;
+}
+.waiting-box {
+  text-align: center;
+  padding: 20px;
+  background: rgba(88,101,242,.1);
+  border-radius: 8px;
+  margin-top: 12px;
+}
+.waiting-box.offline {
+  background: rgba(242,63,67,.12);
+}
+.waiting-box .room-code {
+  font-size: 1.6rem;
+  font-weight: 700;
+  letter-spacing: 3px;
+  color: #fff;
+  margin: 10px 0;
+}
+.spinner {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+  border: 2px solid rgba(255,255,255,.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin .8s linear infinite;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.transfer-card {
+  background: var(--bg);
+  border-radius: 8px;
+  padding: 14px;
+  margin-top: 12px;
+  border: 1px solid rgba(88,101,242,.25);
+}
+.transfer-card .fname {
+  font-weight: 600;
+  color: #fff;
+  word-break: break-all;
+  margin-bottom: 4px;
+}
+.transfer-card .fmeta {
+  font-size: .8rem;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.progress-wrap {
+  height: 8px;
+  background: #1a1b1e;
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 8px 0;
+}
+.progress-bar {
+  height: 100%;
+  background: var(--accent);
+  width: 0%;
+  transition: width .15s ease;
+}
+.progress-bar.done { background: var(--green); }
+.status-text {
+  font-size: .8rem;
+  color: var(--muted);
+}
+.log-box {
+  background: var(--bg);
+  border-radius: 6px;
+  padding: 10px;
+  height: 100px;
+  overflow-y: auto;
+  font-family: monospace;
+  font-size: .7rem;
+  color: #b5bac1;
+  margin-top: 16px;
+}
+.tip {
+  font-size: .8rem;
+  color: var(--muted);
+  margin-top: 8px;
+  line-height: 1.4;
+}
+.offline-icon {
+  font-size: 2.5rem;
+  margin-bottom: 8px;
+  opacity: .9;
+}
+</style>
+</head>
+<body>
+<div class="app">
+  <div class="header">
+    <h1>WebRTC File Share</h1>
+    <div class="status" id="status">Ready</div>
+  </div>
+  <div class="body">
+    <!-- Setup / Host create (only when NOT joining via URL param) -->
+    <div id="setupPanel">
+      <div class="section-title">Signaling server</div>
+      <input class="input" id="signalingUrl" placeholder="wss://your-server.com" value="">
+      <div class="section-title">Room name</div>
+      <input class="input" id="roomInput" placeholder="e.g. myfile01" maxlength="24">
+      <div class="section-title">Select file to share (host only)</div>
+      <div class="file-drop" id="fileDrop">
+        <div>Click or drop a file here</div>
+        <div class="name hidden" id="fileName"></div>
+        <div class="meta hidden" id="fileMeta"></div>
+      </div>
+      <input type="file" id="fileInput" class="hidden">
+      <button class="btn" id="createBtn" disabled>Create room & wait for peer</button>
+      <p class="tip">As host you select one file. When someone joins via the share link, the file is sent automatically. Only the host can send.</p>
+    </div>
+
+    <!-- Waiting for peer (host) -->
+    <div id="waitingPanel" class="hidden">
+      <div class="waiting-box">
+        <div><span class="spinner"></span> Waiting for peer to join…</div>
+        <div class="room-code" id="waitingRoomCode">----</div>
+        <div class="tip">Share this link with the receiver:</div>
+        <div class="share-box">
+          <div class="link" id="shareLink"></div>
+          <button class="btn btn-secondary" id="copyLinkBtn">Copy link</button>
+        </div>
+      </div>
+      <div class="transfer-card" id="hostFileCard">
+        <div class="fname" id="hostFileName">—</div>
+        <div class="fmeta" id="hostFileMeta">—</div>
+        <div class="status-text">Ready to send when peer joins</div>
+      </div>
+    </div>
+
+    <!-- Joiner: connecting (no setup controls shown) -->
+    <div id="joinPanel" class="hidden">
+      <div class="waiting-box">
+        <div><span class="spinner"></span> Joining room…</div>
+        <div class="room-code" id="joinRoomCode">----</div>
+        <div class="tip">Connecting to host. The file will start transferring automatically once connected.</div>
+      </div>
+    </div>
+
+    <!-- Transfer in progress / done -->
+    <div id="transferPanel" class="hidden">
+      <div class="transfer-card" id="transferCard">
+        <div class="fname" id="transferName">—</div>
+        <div class="fmeta" id="transferMeta">—</div>
+        <div class="progress-wrap"><div class="progress-bar" id="progressBar"></div></div>
+        <div class="status-text" id="transferStatus">Preparing…</div>
+        <div class="btn-row hidden" id="receiveActions">
+          <button class="btn" id="saveBtn">Choose save location & receive</button>
+        </div>
+      </div>
+      <button class="btn btn-secondary" id="newShareBtn" style="margin-top:12px">Start new share</button>
+    </div>
+
+    <!-- Peer offline -->
+    <div id="offlinePanel" class="hidden">
+      <div class="waiting-box offline">
+        <div class="offline-icon">⚠</div>
+        <div style="font-size:1.1rem;font-weight:600;color:#fff;margin-bottom:8px">Peer is offline</div>
+        <div class="tip" id="offlineMsg">The other party has disconnected or left the room.</div>
+        <button class="btn btn-secondary" id="offlineBackBtn" style="margin-top:16px">Back</button>
+      </div>
+    </div>
+
+    <div class="log-box" id="log">Ready.</div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const statusEl = $('status');
+const setupPanel = $('setupPanel');
+const waitingPanel = $('waitingPanel');
+const joinPanel = $('joinPanel');
+const transferPanel = $('transferPanel');
+const offlinePanel = $('offlinePanel');
+const signalingUrl = $('signalingUrl');
+const roomInput = $('roomInput');
+const fileDrop = $('fileDrop');
+const fileInput = $('fileInput');
+const fileNameEl = $('fileName');
+const fileMetaEl = $('fileMeta');
+const createBtn = $('createBtn');
+const waitingRoomCode = $('waitingRoomCode');
+const shareLink = $('shareLink');
+const copyLinkBtn = $('copyLinkBtn');
+const hostFileName = $('hostFileName');
+const hostFileMeta = $('hostFileMeta');
+const joinRoomCode = $('joinRoomCode');
+const transferName = $('transferName');
+const transferMeta = $('transferMeta');
+const progressBar = $('progressBar');
+const transferStatus = $('transferStatus');
+const receiveActions = $('receiveActions');
+const saveBtn = $('saveBtn');
+const newShareBtn = $('newShareBtn');
+const offlineMsg = $('offlineMsg');
+const offlineBackBtn = $('offlineBackBtn');
+const logEl = $('log');
+
+const STORAGE_KEY = 'webrtc_file_signaling_url';
+const DEFAULT_SIGNALING_URL = 'wss://wss.getlost.ovh';
+const PLAYER_ID = 'p' + Math.random().toString(36).slice(2, 10);
+const CHUNK_SIZE = 16 * 1024;
+const BUFFER_THRESHOLD = 256 * 1024;
+const DISCONNECT_GRACE_MS = 4000;
+const ICE_SERVERS = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' }
+  ]
+};
+
+let pc = null;
+let dataChannel = null;
+let ws = null;
+let role = null; // 'host' | 'join'
+let currentRoom = '';
+let selectedFile = null;
+let pcRemoteId = '';
+let pendingRemoteCandidates = [];
+let hostOfferStarted = false;
+let offerHandled = false;
+let returning = false;
+let joinedViaUrl = false;
+let peerWasConnected = false;
+let disconnectTimer = null;
+
+const pendingFiles = new Map();
+const activeSends = new Map();
+const sendReadyWaiters = new Map();
+
+function log(m) {
+  console.log(m);
+  logEl.innerHTML += `<div>[${new Date().toLocaleTimeString()}] ${m}</div>`;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+function setStatus(text, type = '') {
+  statusEl.textContent = text;
+  statusEl.className = 'status' + (type ? ' ' + type : '');
+}
+
+function formatSize(bytes) {
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
+}
+
+function loadSavedUrl() {
+  const s = localStorage.getItem(STORAGE_KEY);
+  signalingUrl.value = s || DEFAULT_SIGNALING_URL;
+}
+
+function saveUrl() {
+  const u = signalingUrl.value.trim();
+  if (u) localStorage.setItem(STORAGE_KEY, u);
+}
+
+function getUrlParams() {
+  const p = new URLSearchParams(location.search);
+  return {
+    room: (p.get('room') || '').trim(),
+    role: (p.get('role') || '').toLowerCase()
+  };
+}
+
+function buildShareUrl(room) {
+  const u = new URL(location.href);
+  u.search = '';
+  u.searchParams.set('room', room);
+  return u.toString();
+}
+
+function clearUrlParams() {
+  const u = new URL(location.href);
+  u.search = '';
+  history.replaceState(null, '', u.toString());
+}
+
+function showPanel(name) {
+  setupPanel.classList.add('hidden');
+  waitingPanel.classList.add('hidden');
+  joinPanel.classList.add('hidden');
+  transferPanel.classList.add('hidden');
+  offlinePanel.classList.add('hidden');
+  if (name === 'setup') setupPanel.classList.remove('hidden');
+  if (name === 'waiting') waitingPanel.classList.remove('hidden');
+  if (name === 'join') joinPanel.classList.remove('hidden');
+  if (name === 'transfer') transferPanel.classList.remove('hidden');
+  if (name === 'offline') offlinePanel.classList.remove('hidden');
+}
+
+function cancelDisconnectTimer() {
+  if (disconnectTimer) {
+    clearTimeout(disconnectTimer);
+    disconnectTimer = null;
+  }
+}
+
+function showPeerOffline(reason) {
+  cancelDisconnectTimer();
+  log(reason || 'Peer offline');
+  setStatus('Peer offline', 'error');
+  offlineMsg.textContent = reason || 'The other party has disconnected or left the room.';
+  // Joiner via URL: hide "Back" that goes to setup with room inputs, or make it close-like
+  if (joinedViaUrl) {
+    offlineBackBtn.textContent = 'Close / retry';
+  } else {
+    offlineBackBtn.textContent = 'Back';
+  }
+  showPanel('offline');
+}
+
+function schedulePeerOffline(reason) {
+  if (disconnectTimer) return;
+  if (!peerWasConnected) return; // never fully connected — don't treat as "left"
+  disconnectTimer = setTimeout(() => {
+    disconnectTimer = null;
+    // Re-check before showing
+    if (pc && (pc.connectionState === 'connected' || pc.connectionState === 'connecting')) return;
+    if (dataChannel && dataChannel.readyState === 'open') return;
+    showPeerOffline(reason);
+  }, DISCONNECT_GRACE_MS);
+}
+
+function cleanupConnections() {
+  cancelDisconnectTimer();
+  if (pc) { try { pc.close(); } catch {} pc = null; }
+  if (ws) { try { ws.close(); } catch {} ws = null; }
+  dataChannel = null;
+  pcRemoteId = '';
+  pendingRemoteCandidates = [];
+  hostOfferStarted = false;
+  offerHandled = false;
+  peerWasConnected = false;
+  pendingFiles.clear();
+  activeSends.clear();
+  sendReadyWaiters.clear();
+}
+
+function resetAll() {
+  if (returning) return;
+  returning = true;
+  cleanupConnections();
+  selectedFile = null;
+  currentRoom = '';
+  role = null;
+  joinedViaUrl = false;
+  fileNameEl.classList.add('hidden');
+  fileMetaEl.classList.add('hidden');
+  const dropHint = fileDrop.querySelector('div');
+  if (dropHint) dropHint.classList.remove('hidden');
+  createBtn.disabled = true;
+  receiveActions.classList.add('hidden');
+  progressBar.style.width = '0%';
+  progressBar.classList.remove('done');
+  setStatus('Ready');
+  clearUrlParams();
+  showPanel('setup');
+  setTimeout(() => { returning = false; }, 400);
+}
+
+// ——— File selection (host only) ———
+fileDrop.addEventListener('click', () => fileInput.click());
+fileDrop.addEventListener('dragover', e => {
+  e.preventDefault();
+  fileDrop.classList.add('dragover');
+});
+fileDrop.addEventListener('dragleave', () => fileDrop.classList.remove('dragover'));
+fileDrop.addEventListener('drop', e => {
+  e.preventDefault();
+  fileDrop.classList.remove('dragover');
+  if (e.dataTransfer.files[0]) setSelectedFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener('change', () => {
+  if (fileInput.files[0]) setSelectedFile(fileInput.files[0]);
+  fileInput.value = '';
+});
+
+function setSelectedFile(file) {
+  selectedFile = file;
+  const hint = fileDrop.querySelector('div');
+  if (hint) hint.classList.add('hidden');
+  fileNameEl.textContent = file.name;
+  fileNameEl.classList.remove('hidden');
+  fileMetaEl.textContent = formatSize(file.size) + (file.type ? ' · ' + file.type : '');
+  fileMetaEl.classList.remove('hidden');
+  createBtn.disabled = !roomInput.value.trim() || roomInput.value.trim().length < 2;
+}
+
+roomInput.addEventListener('input', () => {
+  createBtn.disabled = !selectedFile || roomInput.value.trim().length < 2;
+});
+
+// ——— Signaling helpers ———
+function sendSignal(kind, payload, to) {
+  if (ws && ws.readyState === 1 && currentRoom) {
+    ws.send(JSON.stringify({ kind, roomId: currentRoom, from: PLAYER_ID, to, payload }));
+  }
+}
+
+function bindIce() {
+  if (!pc) return;
+  pc.onicecandidate = e => {
+    if (e.candidate && currentRoom) sendSignal('ice', e.candidate, pcRemoteId);
+  };
+}
+
+function flushRemoteCandidates() {
+  if (!pc || !pc.remoteDescription) return;
+  const list = pendingRemoteCandidates.splice(0);
+  for (const c of list) pc.addIceCandidate(c).catch(() => {});
+}
+
+function bindConnectionState(pcRef) {
+  pcRef.onconnectionstatechange = () => {
+    const st = pcRef.connectionState;
+    log('Connection state: ' + st);
+    if (st === 'connected') {
+      peerWasConnected = true;
+      cancelDisconnectTimer();
+      setStatus('Connected');
+    } else if (st === 'disconnected') {
+      schedulePeerOffline('Peer connection lost. The other party may be offline.');
+    } else if (st === 'failed' || st === 'closed') {
+      if (peerWasConnected) {
+        showPeerOffline('The other party has disconnected or left the room.');
+      }
+    }
+  };
+  pcRef.oniceconnectionstatechange = () => {
+    const st = pcRef.iceConnectionState;
+    log('ICE state: ' + st);
+    if (st === 'connected' || st === 'completed') {
+      peerWasConnected = true;
+      cancelDisconnectTimer();
+    } else if (st === 'disconnected') {
+      schedulePeerOffline('ICE disconnected. Peer may be offline.');
+    } else if (st === 'failed' || st === 'closed') {
+      if (peerWasConnected) {
+        showPeerOffline('The other party has disconnected or left the room.');
+      }
+    }
+  };
+}
+
+// ——— Data channel & file transfer ———
+function setupDataChannelEvents() {
+  dataChannel.binaryType = 'arraybuffer';
+  dataChannel.onopen = () => {
+    log('Data channel open');
+    peerWasConnected = true;
+    cancelDisconnectTimer();
+    setStatus('Connected');
+    if (role === 'host' && selectedFile) {
+      setTimeout(() => sendFile(selectedFile), 400);
+    }
+  };
+  dataChannel.onclose = () => {
+    log('Data channel closed');
+    if (peerWasConnected) {
+      schedulePeerOffline('Data channel closed. The other party may be offline.');
+    }
+  };
+  dataChannel.onmessage = e => {
+    if (e.data instanceof ArrayBuffer || e.data instanceof Blob || e.data instanceof Uint8Array) {
+      handleFileChunk(e.data);
+      return;
+    }
+    if (typeof e.data === 'string') {
+      try {
+        const d = JSON.parse(e.data);
+        if (d.type === 'hb') return;
+        if (d.type === 'file-meta') { handleFileMeta(d); return; }
+        if (d.type === 'file-ready') {
+          const resolve = sendReadyWaiters.get(d.id);
+          if (resolve) resolve(true);
+          return;
+        }
+        if (d.type === 'file-cancel') {
+          cancelReceiveFile(d.id);
+          return;
+        }
+      } catch {}
+    }
+  };
+}
+
+function createFileMsgUI(meta, isLocal) {
+  transferName.textContent = meta.name;
+  transferMeta.textContent = formatSize(meta.size) + (meta.mime ? ' · ' + meta.mime : '');
+  progressBar.style.width = '0%';
+  progressBar.classList.remove('done');
+  transferStatus.textContent = isLocal ? 'Waiting for receiver to accept…' : 'Incoming file…';
+  showPanel('transfer');
+  if (!isLocal) receiveActions.classList.remove('hidden');
+  else receiveActions.classList.add('hidden');
+}
+
+function handleFileMeta(meta) {
+  const id = meta.id;
+  createFileMsgUI(meta, false);
+  const entry = {
+    meta,
+    received: 0,
+    total: meta.totalChunks,
+    writable: null,
+    writeQueue: Promise.resolve(),
+    finished: false
+  };
+  pendingFiles.set(id, entry);
+  saveBtn.onclick = async () => {
+    if (!window.showSaveFilePicker) {
+      transferStatus.textContent = 'Your browser does not support streaming save. Use latest Chrome/Edge on desktop over HTTPS or localhost.';
+      return;
+    }
+    saveBtn.disabled = true;
+    try {
+      const handle = await window.showSaveFilePicker({ suggestedName: meta.name });
+      entry.writable = await handle.createWritable();
+      transferStatus.textContent = 'Save location chosen. Waiting for data…';
+      receiveActions.classList.add('hidden');
+      dataChannel.send(JSON.stringify({ type: 'file-ready', id }));
+      log('Ready to receive: ' + meta.name);
+    } catch (e) {
+      saveBtn.disabled = false;
+      transferStatus.textContent = 'Save cancelled';
+      log('Save picker cancelled: ' + e.message);
+    }
+  };
+}
+
+function processChunkData(id, data) {
+  const entry = pendingFiles.get(id);
+  if (!entry || !entry.writable || entry.finished) return;
+  const chunk = new Uint8Array(data);
+  entry.writeQueue = entry.writeQueue.then(() => entry.writable.write(chunk)).then(() => {
+    entry.received++;
+    const pct = Math.min(100, Math.round(entry.received / entry.total * 100));
+    progressBar.style.width = pct + '%';
+    transferStatus.textContent = `Receiving ${pct}% (${entry.received}/${entry.total})`;
+    if (entry.received >= entry.total) {
+      entry.finished = true;
+      entry.writeQueue.then(async () => {
+        try {
+          await entry.writable.close();
+          progressBar.style.width = '100%';
+          progressBar.classList.add('done');
+          transferStatus.textContent = 'Receive complete. File saved.';
+          setStatus('Done');
+          log('File received: ' + entry.meta.name);
+        } catch (e) {
+          transferStatus.textContent = 'Save failed: ' + e.message;
+          log('Finish save failed: ' + e.message);
+        }
+        pendingFiles.delete(id);
+      });
+    }
+  }).catch(async err => {
+    transferStatus.textContent = 'Write failed: ' + err.message;
+    log('Write failed: ' + err.message);
+    try { await entry.writable?.abort(); } catch {}
+    entry.finished = true;
+  });
+}
+
+function handleFileChunk(raw) {
+  const process = buffer => {
+    const view = new Uint8Array(buffer);
+    if (view.length < 36) return;
+    const id = String.fromCharCode.apply(null, view.subarray(0, 36));
+    const data = view.slice(36);
+    processChunkData(id, data);
+  };
+  if (raw instanceof Blob) raw.arrayBuffer().then(process).catch(err => log('Chunk parse error: ' + err.message));
+  else if (raw instanceof ArrayBuffer) process(raw);
+  else if (raw instanceof Uint8Array) process(raw.buffer.slice(raw.byteOffset, raw.byteOffset + raw.byteLength));
+}
+
+function cancelReceiveFile(id) {
+  const entry = pendingFiles.get(id);
+  if (!entry) return;
+  progressBar.style.width = '0%';
+  transferStatus.textContent = 'Sender cancelled';
+  entry.finished = true;
+  try { entry.writable?.abort(); } catch {}
+  pendingFiles.delete(id);
+  log('Receive cancelled: ' + entry.meta.name);
+}
+
+async function sendFile(file) {
+  if (!dataChannel || dataChannel.readyState !== 'open') {
+    log('Data channel not ready');
+    return;
+  }
+  const id = crypto.randomUUID();
+  const totalChunks = Math.ceil(file.size / CHUNK_SIZE) || 1;
+  const meta = {
+    type: 'file-meta',
+    id,
+    name: file.name,
+    size: file.size,
+    mime: file.type || 'application/octet-stream',
+    totalChunks
+  };
+  createFileMsgUI(meta, true);
+  const sendState = { cancelled: false };
+  activeSends.set(id, sendState);
+  let readyResolve;
+  const readyPromise = new Promise(resolve => { readyResolve = resolve; });
+  sendReadyWaiters.set(id, readyResolve);
+
+  dataChannel.send(JSON.stringify(meta));
+  log('File meta sent, waiting for receiver accept…');
+
+  const ready = await readyPromise;
+  sendReadyWaiters.delete(id);
+  if (!ready || sendState.cancelled) {
+    activeSends.delete(id);
+    transferStatus.textContent = 'Transfer cancelled or receiver did not accept';
+    return;
+  }
+
+  transferStatus.textContent = 'Sending 0%';
+  dataChannel.bufferedAmountLowThreshold = BUFFER_THRESHOLD;
+  let sent = 0;
+  for (let i = 0; i < totalChunks; i++) {
+    if (sendState.cancelled || !dataChannel || dataChannel.readyState !== 'open') break;
+    while (dataChannel.bufferedAmount > BUFFER_THRESHOLD) {
+      if (sendState.cancelled || dataChannel.readyState !== 'open') break;
+      await new Promise(resolve => {
+        const handler = () => {
+          dataChannel.removeEventListener('bufferedamountlow', handler);
+          resolve();
+        };
+        dataChannel.addEventListener('bufferedamountlow', handler);
+        if (dataChannel.bufferedAmount <= BUFFER_THRESHOLD) {
+          dataChannel.removeEventListener('bufferedamountlow', handler);
+          resolve();
+        }
+      });
+    }
+    if (sendState.cancelled || dataChannel.readyState !== 'open') break;
+    const start = i * CHUNK_SIZE;
+    const end = Math.min(start + CHUNK_SIZE, file.size);
+    const chunkData = new Uint8Array(await file.slice(start, end).arrayBuffer());
+    const packet = new Uint8Array(36 + chunkData.length);
+    for (let j = 0; j < 36; j++) packet[j] = id.charCodeAt(j);
+    packet.set(chunkData, 36);
+    try {
+      dataChannel.send(packet);
+    } catch (e) {
+      log('Chunk send failed: ' + e.message);
+      transferStatus.textContent = 'Send failed: ' + e.message;
+      activeSends.delete(id);
+      return;
+    }
+    sent++;
+    const pct = Math.round(sent / totalChunks * 100);
+    progressBar.style.width = pct + '%';
+    transferStatus.textContent = `Sending ${pct}% (${sent}/${totalChunks})`;
+  }
+  if (!sendState.cancelled && sent === totalChunks) {
+    progressBar.style.width = '100%';
+    progressBar.classList.add('done');
+    transferStatus.textContent = 'Send complete';
+    setStatus('Done');
+    log('File sent: ' + file.name);
+  } else if (!sendState.cancelled) {
+    transferStatus.textContent = 'Send interrupted';
+  }
+  activeSends.delete(id);
+}
+
+// ——— Peer connection ———
+function createHostPeerConnection() {
+  pc = new RTCPeerConnection(ICE_SERVERS);
+  bindConnectionState(pc);
+  dataChannel = pc.createDataChannel('file');
+  setupDataChannelEvents();
+  bindIce();
+}
+
+function createJoinPeerConnection() {
+  pc = new RTCPeerConnection(ICE_SERVERS);
+  bindConnectionState(pc);
+  pc.ondatachannel = e => {
+    dataChannel = e.channel;
+    setupDataChannelEvents();
+  };
+  bindIce();
+}
+
+async function initHostPeer(to) {
+  if (pc && hostOfferStarted) return;
+  hostOfferStarted = true;
+  pcRemoteId = to || pcRemoteId;
+  if (!pc) createHostPeerConnection();
+  const o = await pc.createOffer();
+  await pc.setLocalDescription(o);
+  const desc = pc.localDescription;
+  log('Offer created, sending to ' + pcRemoteId);
+  if (pcRemoteId) sendSignal('desc', desc, pcRemoteId);
+  setStatus('Connecting…', 'waiting');
+}
+
+async function handleRemoteDesc(desc, from) {
+  pcRemoteId = from;
+  if (desc.type === 'offer' && role === 'join') {
+    if (pc.signalingState !== 'stable') {
+      log('Ignoring duplicate offer');
+      return;
+    }
+    offerHandled = true;
+    if (!pc) createJoinPeerConnection();
+    await pc.setRemoteDescription(new RTCSessionDescription(desc));
+    flushRemoteCandidates();
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    sendSignal('desc', pc.localDescription, from);
+    log('Answer sent');
+    setStatus('Connecting…', 'waiting');
+  } else if (desc.type === 'answer' && role === 'host') {
+    if (pc.signalingState !== 'have-local-offer') {
+      log('Ignoring answer, state: ' + pc.signalingState);
+      return;
+    }
+    await pc.setRemoteDescription(new RTCSessionDescription(desc));
+    flushRemoteCandidates();
+    log('Answer received, establishing P2P');
+    setStatus('Connecting…', 'waiting');
+  }
+}
+
+// ——— Connect to signaling ———
+function connectSignaling(room, asRole) {
+  const url = signalingUrl.value.trim() || DEFAULT_SIGNALING_URL;
+  if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
+    alert('Please enter a valid ws:// or wss:// URL');
+    return;
+  }
+  signalingUrl.value = url;
+  saveUrl();
+  if (!room || room.length < 2) {
+    alert('Room name must be at least 2 characters');
+    return;
+  }
+  currentRoom = room;
+  role = asRole;
+  setStatus('Connecting…', 'waiting');
+
+  // When joining via URL: never show setup controls
+  if (asRole === 'join') {
+    joinRoomCode.textContent = currentRoom;
+    showPanel('join');
+  }
+
+  ws = new WebSocket(url);
+  ws.onopen = () => {
+    log('Signaling connected: ' + url);
+    ws.send(JSON.stringify({
+      kind: 'register',
+      roomId: currentRoom,
+      from: PLAYER_ID,
+      announce: true
+    }));
+    log('Registered room ' + currentRoom + ' as ' + role + ', id: ' + PLAYER_ID);
+    if (role === 'join') {
+      createJoinPeerConnection();
+    }
+  };
+  ws.onmessage = async e => {
+    try {
+      const m = JSON.parse(e.data);
+      if (m.sys === 'error' || m.type === 'error') {
+        log('Signaling error: ' + (m.message || m.code || 'unknown'));
+        setStatus('Error', 'error');
+        return;
+      }
+      if (m.sys === 'roster') {
+        const roster = Array.isArray(m.roster) ? m.roster : [];
+        log('Room members: ' + roster.join(', '));
+        const others = roster.filter(id => id !== PLAYER_ID);
+
+        // Peer left after we were connected (roster no longer has them)
+        if (peerWasConnected && !others.length) {
+          showPeerOffline('The other party has left the room.');
+          return;
+        }
+
+        if (!others.length) {
+          if (role === 'host') {
+            waitingRoomCode.textContent = currentRoom;
+            shareLink.textContent = buildShareUrl(currentRoom);
+            hostFileName.textContent = selectedFile ? selectedFile.name : '—';
+            hostFileMeta.textContent = selectedFile ? formatSize(selectedFile.size) : '—';
+            showPanel('waiting');
+            setStatus('Waiting for peer', 'waiting');
+          }
+          // Joiner alone: keep showing join panel (waiting for host)
+          return;
+        }
+        const target = others[0];
+        pcRemoteId = target;
+        if (role === 'host' && !hostOfferStarted) {
+          await initHostPeer(target);
+        }
+        return;
+      }
+      if (m.kind === 'desc') {
+        if (m.from === PLAYER_ID) return;
+        await handleRemoteDesc(m.payload, m.from);
+        return;
+      }
+      if (m.kind === 'ice') {
+        if (m.from === PLAYER_ID) return;
+        if (m.from) pcRemoteId = m.from;
+        const c = m.payload;
+        if (!pc || !pc.remoteDescription) pendingRemoteCandidates.push(c);
+        else pc.addIceCandidate(c).catch(() => {});
+        return;
+      }
+    } catch (err) {
+      log('Signaling message error: ' + err.message);
+    }
+  };
+  ws.onerror = () => {
+    log('Signaling error');
+    setStatus('Signaling error', 'error');
+  };
+  ws.onclose = () => {
+    log('Signaling closed');
+    if (peerWasConnected) {
+      schedulePeerOffline('Signaling disconnected. Peer may be offline.');
+    }
+  };
+}
+
+// ——— UI actions ———
+createBtn.addEventListener('click', () => {
+  const room = roomInput.value.trim();
+  if (!selectedFile) {
+    alert('Please select a file first');
+    return;
+  }
+  if (room.length < 2) {
+    alert('Room name must be at least 2 characters');
+    return;
+  }
+  connectSignaling(room, 'host');
+});
+
+copyLinkBtn.addEventListener('click', () => {
+  navigator.clipboard.writeText(shareLink.textContent).then(() => {
+    copyLinkBtn.textContent = 'Copied!';
+    setTimeout(() => { copyLinkBtn.textContent = 'Copy link'; }, 2000);
+  });
+});
+
+newShareBtn.addEventListener('click', () => resetAll());
+
+offlineBackBtn.addEventListener('click', () => {
+  if (joinedViaUrl) {
+    // Clear URL and go to clean setup, or just reload without params
+    cleanupConnections();
+    clearUrlParams();
+    joinedViaUrl = false;
+    role = null;
+    currentRoom = '';
+    setStatus('Ready');
+    showPanel('setup');
+  } else {
+    resetAll();
+  }
+});
+
+signalingUrl.addEventListener('change', saveUrl);
+signalingUrl.addEventListener('blur', saveUrl);
+
+// ——— Boot: check URL params ———
+loadSavedUrl();
+const params = getUrlParams();
+if (params.room) {
+  // Access via ?room=xxx → hide all setup / room-input controls, auto-join only
+  joinedViaUrl = true;
+  role = 'join';
+  currentRoom = params.room;
+  // Do NOT show setupPanel (room input, file drop, signaling fields)
+  connectSignaling(params.room, 'join');
+} else {
+  joinedViaUrl = false;
+  showPanel('setup');
+}
+</script>
+</body>
+</html>
