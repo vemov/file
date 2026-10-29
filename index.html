@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
-<title>WebRTC File 20261029</title>
+<title>WebRTC File Share v29-1</title>
 <style>
 :root {
   --bg: #1a1b1e;
@@ -218,7 +218,7 @@ body {
   background: var(--bg);
   border-radius: 6px;
   padding: 10px;
-  height: 100px;
+  height: 120px;
   overflow-y: auto;
   font-family: monospace;
   font-size: .7rem;
@@ -258,7 +258,7 @@ body {
       </div>
       <input type="file" id="fileInput" class="hidden">
       <button class="btn" id="createBtn" disabled>Create room & wait for peer</button>
-      <p class="tip">As host you select one file. When someone joins via the share link, the file is sent automatically. Only the host can send.</p>
+      <p class="tip">Host selects one file. Share the link; when peer joins, file transfers automatically. Works over mobile data (STUN + TURN).</p>
     </div>
 
     <div id="waitingPanel" class="hidden">
@@ -344,22 +344,37 @@ const offlineMsg = $('offlineMsg');
 const offlineBackBtn = $('offlineBackBtn');
 const logEl = $('log');
 
+/* ===== Connection config — aligned with web1, plus TURN for mobile/CGNAT ===== */
 const STORAGE_KEY = 'webrtc_file_signaling_url';
 const DEFAULT_SIGNALING_URL = 'wss://wss.getlost.ovh';
 const PLAYER_ID = 'p' + Math.random().toString(36).slice(2, 10);
 const CHUNK_SIZE = 16 * 1024;
 const BUFFER_THRESHOLD = 256 * 1024;
 const DISCONNECT_GRACE_MS = 18000;
-const CONNECT_TIMEOUT_MS = 20000;
-const MAX_CONNECT_RETRIES = 2;
+
+// Same STUN as web1 + public TURN so mobile data / CGNAT can still connect
 const ICE_SERVERS = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun.cloudflare.com:3478' }
-  ],
-  iceCandidatePoolSize: 4
+    {
+      urls: [
+        'turn:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:443',
+        'turn:openrelay.metered.ca:443?transport=tcp'
+      ],
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    },
+    {
+      urls: [
+        'turn:openrelay.metered.ca:80?transport=tcp',
+        'turns:openrelay.metered.ca:443'
+      ],
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    }
+  ]
 };
 
 let pc = null;
@@ -377,9 +392,9 @@ let joinedViaUrl = false;
 let peerWasConnected = false;
 let disconnectTimer = null;
 let dcKeepAliveTimer = null;
-let connectTimeoutTimer = null;
-let connectRetryCount = 0;
-let negotiating = false;
+let iceRestartTimer = null;
+let keepAliveTimer = null;
+let signalingRegistered = false;
 
 const pendingFiles = new Map();
 const activeSends = new Map();
@@ -414,10 +429,7 @@ function saveUrl() {
 
 function getUrlParams() {
   const p = new URLSearchParams(location.search);
-  return {
-    room: (p.get('room') || '').trim(),
-    role: (p.get('role') || '').toLowerCase()
-  };
+  return { room: (p.get('room') || '').trim() };
 }
 
 function buildShareUrl(room) {
@@ -446,10 +458,12 @@ function showPanel(name) {
   if (name === 'offline') offlinePanel.classList.remove('hidden');
 }
 
+/* ===== Timers — same pattern as web1 ===== */
 function clearAllTimers() {
-  if (disconnectTimer) { clearTimeout(disconnectTimer); disconnectTimer = null; }
+  if (keepAliveTimer) { clearInterval(keepAliveTimer); keepAliveTimer = null; }
   if (dcKeepAliveTimer) { clearInterval(dcKeepAliveTimer); dcKeepAliveTimer = null; }
-  if (connectTimeoutTimer) { clearTimeout(connectTimeoutTimer); connectTimeoutTimer = null; }
+  if (disconnectTimer) { clearTimeout(disconnectTimer); disconnectTimer = null; }
+  if (iceRestartTimer) { clearTimeout(iceRestartTimer); iceRestartTimer = null; }
 }
 
 function cancelDisconnectTimer() {
@@ -468,6 +482,17 @@ function startDataChannelKeepAlive() {
   }, 8000);
 }
 
+function scheduleDisconnect(reason) {
+  if (disconnectTimer) return;
+  log(reason + ', waiting to recover…');
+  disconnectTimer = setTimeout(() => {
+    disconnectTimer = null;
+    if (pc && (pc.connectionState === 'connected' || pc.connectionState === 'connecting')) return;
+    if (dataChannel && dataChannel.readyState === 'open') return;
+    showPeerOffline(reason);
+  }, DISCONNECT_GRACE_MS);
+}
+
 function tryIceRestart() {
   if (!pc || typeof pc.restartIce !== 'function') return;
   if (pc.connectionState !== 'disconnected' && pc.iceConnectionState !== 'disconnected') return;
@@ -479,83 +504,13 @@ function tryIceRestart() {
   }
 }
 
-function startConnectTimeout() {
-  if (connectTimeoutTimer) clearTimeout(connectTimeoutTimer);
-  connectTimeoutTimer = setTimeout(() => {
-    connectTimeoutTimer = null;
-    if (peerWasConnected) return;
-    if (dataChannel && dataChannel.readyState === 'open') return;
-    if (pc && pc.connectionState === 'connected') return;
-    log('Connect timeout, retrying… (' + (connectRetryCount + 1) + '/' + MAX_CONNECT_RETRIES + ')');
-    if (connectRetryCount < MAX_CONNECT_RETRIES) {
-      connectRetryCount++;
-      renegotiate();
-    } else {
-      log('Max connect retries reached');
-      setStatus('Connect failed', 'error');
-      if (role === 'join') {
-        showPeerOffline('Could not establish connection. Please ask host to create a new room and try again.');
-      }
-    }
-  }, CONNECT_TIMEOUT_MS);
-}
-
-function cancelConnectTimeout() {
-  if (connectTimeoutTimer) {
-    clearTimeout(connectTimeoutTimer);
-    connectTimeoutTimer = null;
-  }
-}
-
-async function renegotiate() {
-  if (!pc || !pcRemoteId || negotiating) return;
-  negotiating = true;
-  try {
-    if (role === 'host') {
-      hostOfferStarted = false;
-      offerHandled = false;
-      pendingRemoteCandidates = [];
-      // recreate data channel + offer
-      try { if (dataChannel) dataChannel.close(); } catch {}
-      dataChannel = pc.createDataChannel('file');
-      setupDataChannelEvents();
-      const o = await pc.createOffer({ iceRestart: true });
-      await pc.setLocalDescription(o);
-      sendSignal('desc', pc.localDescription, pcRemoteId);
-      log('Renegotiate offer sent');
-      setStatus('Retrying…', 'waiting');
-      startConnectTimeout();
-    }
-  } catch (e) {
-    log('Renegotiate failed: ' + e.message);
-  } finally {
-    negotiating = false;
-  }
-}
-
 function showPeerOffline(reason) {
   clearAllTimers();
   log(reason || 'Peer offline');
   setStatus('Peer offline', 'error');
   offlineMsg.textContent = reason || 'The other party has disconnected or left the room.';
-  if (joinedViaUrl) {
-    offlineBackBtn.textContent = 'Close / retry';
-  } else {
-    offlineBackBtn.textContent = 'Back';
-  }
+  offlineBackBtn.textContent = joinedViaUrl ? 'Close / retry' : 'Back';
   showPanel('offline');
-}
-
-function schedulePeerOffline(reason) {
-  if (disconnectTimer) return;
-  if (!peerWasConnected) return;
-  log((reason || 'Connection issue') + ', waiting to recover…');
-  disconnectTimer = setTimeout(() => {
-    disconnectTimer = null;
-    if (pc && (pc.connectionState === 'connected' || pc.connectionState === 'connecting')) return;
-    if (dataChannel && dataChannel.readyState === 'open') return;
-    showPeerOffline(reason);
-  }, DISCONNECT_GRACE_MS);
 }
 
 function cleanupConnections() {
@@ -568,8 +523,7 @@ function cleanupConnections() {
   hostOfferStarted = false;
   offerHandled = false;
   peerWasConnected = false;
-  connectRetryCount = 0;
-  negotiating = false;
+  signalingRegistered = false;
   pendingFiles.clear();
   activeSends.clear();
   sendReadyWaiters.clear();
@@ -597,12 +551,9 @@ function resetAll() {
   setTimeout(() => { returning = false; }, 400);
 }
 
-// ——— File selection (host only) ———
+/* ===== File selection ===== */
 fileDrop.addEventListener('click', () => fileInput.click());
-fileDrop.addEventListener('dragover', e => {
-  e.preventDefault();
-  fileDrop.classList.add('dragover');
-});
+fileDrop.addEventListener('dragover', e => { e.preventDefault(); fileDrop.classList.add('dragover'); });
 fileDrop.addEventListener('dragleave', () => fileDrop.classList.remove('dragover'));
 fileDrop.addEventListener('drop', e => {
   e.preventDefault();
@@ -629,7 +580,7 @@ roomInput.addEventListener('input', () => {
   createBtn.disabled = !selectedFile || roomInput.value.trim().length < 2;
 });
 
-// ——— Signaling helpers ———
+/* ===== Signaling helpers — identical to web1 ===== */
 function sendSignal(kind, payload, to) {
   if (ws && ws.readyState === 1 && currentRoom) {
     ws.send(JSON.stringify({ kind, roomId: currentRoom, from: PLAYER_ID, to, payload }));
@@ -639,25 +590,17 @@ function sendSignal(kind, payload, to) {
 function bindIce() {
   if (!pc) return;
   pc.onicecandidate = e => {
-    if (e.candidate && currentRoom) {
-      // send even if pcRemoteId not yet known — server may still route by room
-      sendSignal('ice', e.candidate, pcRemoteId || undefined);
-    }
-  };
-  pc.onicegatheringstatechange = () => {
-    log('ICE gathering: ' + pc.iceGatheringState);
+    if (e.candidate && currentRoom) sendSignal('ice', e.candidate, pcRemoteId);
   };
 }
 
 function flushRemoteCandidates() {
   if (!pc || !pc.remoteDescription) return;
   const list = pendingRemoteCandidates.splice(0);
-  for (const c of list) {
-    pc.addIceCandidate(c).catch(err => log('addIceCandidate: ' + (err.message || err)));
-  }
-  if (list.length) log('Flushed ' + list.length + ' pending ICE candidates');
+  for (const c of list) pc.addIceCandidate(c).catch(() => {});
 }
 
+/* ===== Connection state — same as web1 ===== */
 function bindConnectionState(pcRef) {
   pcRef.onconnectionstatechange = () => {
     const st = pcRef.connectionState;
@@ -665,24 +608,11 @@ function bindConnectionState(pcRef) {
     if (st === 'connected') {
       peerWasConnected = true;
       cancelDisconnectTimer();
-      cancelConnectTimeout();
-      connectRetryCount = 0;
       setStatus('Connected');
     } else if (st === 'disconnected') {
       tryIceRestart();
-      schedulePeerOffline('P2P connection briefly lost');
-    } else if (st === 'failed') {
-      cancelDisconnectTimer();
-      if (peerWasConnected) {
-        showPeerOffline('The other party has disconnected or left the room.');
-      } else if (connectRetryCount < MAX_CONNECT_RETRIES) {
-        connectRetryCount++;
-        log('Connection failed, renegotiating…');
-        renegotiate();
-      } else {
-        setStatus('Connect failed', 'error');
-      }
-    } else if (st === 'closed') {
+      scheduleDisconnect('P2P connection briefly lost');
+    } else if (st === 'failed' || st === 'closed') {
       cancelDisconnectTimer();
       if (peerWasConnected) {
         showPeerOffline('The other party has disconnected or left the room.');
@@ -695,31 +625,25 @@ function bindConnectionState(pcRef) {
     if (st === 'connected' || st === 'completed') {
       peerWasConnected = true;
       cancelDisconnectTimer();
-      cancelConnectTimeout();
     } else if (st === 'disconnected') {
       tryIceRestart();
-      schedulePeerOffline('ICE briefly disconnected');
-    } else if (st === 'failed') {
+      scheduleDisconnect('ICE briefly disconnected');
+    } else if (st === 'failed' || st === 'closed') {
       cancelDisconnectTimer();
       if (peerWasConnected) {
         showPeerOffline('The other party has disconnected or left the room.');
-      } else if (connectRetryCount < MAX_CONNECT_RETRIES && role === 'host') {
-        connectRetryCount++;
-        log('ICE failed, renegotiating…');
-        renegotiate();
       }
     }
   };
 }
 
-// ——— Data channel & file transfer ———
+/* ===== Data channel — same keepalive as web1 ===== */
 function setupDataChannelEvents() {
   dataChannel.binaryType = 'arraybuffer';
   dataChannel.onopen = () => {
     log('Data channel open');
     peerWasConnected = true;
     cancelDisconnectTimer();
-    cancelConnectTimeout();
     startDataChannelKeepAlive();
     setStatus('Connected');
     if (role === 'host' && selectedFile) {
@@ -729,12 +653,7 @@ function setupDataChannelEvents() {
   dataChannel.onclose = () => {
     log('Data channel closed');
     if (dcKeepAliveTimer) { clearInterval(dcKeepAliveTimer); dcKeepAliveTimer = null; }
-    if (peerWasConnected) {
-      schedulePeerOffline('Data channel closed');
-    }
-  };
-  dataChannel.onerror = () => {
-    log('Data channel error');
+    scheduleDisconnect('Data channel closed');
   };
   dataChannel.onmessage = e => {
     if (e.data instanceof ArrayBuffer || e.data instanceof Blob || e.data instanceof Uint8Array) {
@@ -947,11 +866,11 @@ async function sendFile(file) {
   activeSends.delete(id);
 }
 
-// ——— Peer connection ———
+/* ===== Peer connection — same flow as web1 ===== */
 function createHostPeerConnection() {
   pc = new RTCPeerConnection(ICE_SERVERS);
   bindConnectionState(pc);
-  dataChannel = pc.createDataChannel('file', { ordered: true });
+  dataChannel = pc.createDataChannel('file');
   setupDataChannelEvents();
   bindIce();
 }
@@ -967,70 +886,49 @@ function createJoinPeerConnection() {
 }
 
 async function initHostPeer(to) {
-  if (hostOfferStarted && pc) return;
+  if (pc && hostOfferStarted) return;
   hostOfferStarted = true;
   pcRemoteId = to || pcRemoteId;
   if (!pc) createHostPeerConnection();
   bindIce();
-  try {
-    const o = await pc.createOffer();
-    await pc.setLocalDescription(o);
-    const desc = pc.localDescription;
-    log('Offer created, sending to ' + pcRemoteId);
-    if (pcRemoteId) sendSignal('desc', desc, pcRemoteId);
-    setStatus('Connecting…', 'waiting');
-    startConnectTimeout();
-  } catch (e) {
-    hostOfferStarted = false;
-    log('createOffer failed: ' + e.message);
-  }
+  const o = await pc.createOffer();
+  await pc.setLocalDescription(o);
+  const desc = pc.localDescription;
+  log('Offer created, sending to ' + pcRemoteId);
+  if (pcRemoteId) sendSignal('desc', desc, pcRemoteId);
+  setStatus('Connecting…', 'waiting');
 }
 
 async function handleRemoteDesc(desc, from) {
   pcRemoteId = from;
   if (desc.type === 'offer' && role === 'join') {
     if (!pc) createJoinPeerConnection();
-    // allow re-offer during retry (have-local-offer / have-remote-offer)
-    if (pc.signalingState === 'have-local-offer') {
-      log('Glare: rolling back local offer to accept remote');
-      try { await pc.setLocalDescription({ type: 'rollback' }); } catch {}
-    }
-    if (pc.signalingState !== 'stable' && pc.signalingState !== 'have-remote-offer') {
-      log('Ignoring offer, state: ' + pc.signalingState);
+    if (pc.signalingState !== 'stable') {
+      log('Ignoring duplicate offer, state: ' + pc.signalingState);
       return;
     }
     offerHandled = true;
-    try {
-      await pc.setRemoteDescription(new RTCSessionDescription(desc));
-      flushRemoteCandidates();
-      const answer = await pc.createAnswer();
-      await pc.setLocalDescription(answer);
-      sendSignal('desc', pc.localDescription, from);
-      log('Answer sent');
-      setStatus('Connecting…', 'waiting');
-      startConnectTimeout();
-    } catch (e) {
-      log('handle offer failed: ' + e.message);
-      offerHandled = false;
-    }
+    await pc.setRemoteDescription(new RTCSessionDescription(desc));
+    flushRemoteCandidates();
+    const answer = await pc.createAnswer();
+    await pc.setLocalDescription(answer);
+    sendSignal('desc', pc.localDescription, from);
+    log('Answer sent');
+    setStatus('Connecting…', 'waiting');
   } else if (desc.type === 'answer' && role === 'host') {
     if (!pc) return;
     if (pc.signalingState !== 'have-local-offer') {
       log('Ignoring answer, state: ' + pc.signalingState);
       return;
     }
-    try {
-      await pc.setRemoteDescription(new RTCSessionDescription(desc));
-      flushRemoteCandidates();
-      log('Answer received, establishing P2P');
-      setStatus('Connecting…', 'waiting');
-    } catch (e) {
-      log('handle answer failed: ' + e.message);
-    }
+    await pc.setRemoteDescription(new RTCSessionDescription(desc));
+    flushRemoteCandidates();
+    log('Answer received, establishing P2P');
+    setStatus('Connecting…', 'waiting');
   }
 }
 
-// ——— Connect to signaling ———
+/* ===== Connect signaling — same register / roster / desc / ice as web1 ===== */
 function connectSignaling(room, asRole) {
   const url = signalingUrl.value.trim() || DEFAULT_SIGNALING_URL;
   if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
@@ -1043,9 +941,20 @@ function connectSignaling(room, asRole) {
     alert('Room name must be at least 2 characters');
     return;
   }
+
+  clearAllTimers();
+  if (pc) { try { pc.close(); } catch {} pc = null; }
+  if (ws) { try { ws.close(); } catch {} ws = null; }
+  dataChannel = null;
+  pcRemoteId = '';
+  pendingRemoteCandidates = [];
+  hostOfferStarted = false;
+  offerHandled = false;
+  peerWasConnected = false;
+  signalingRegistered = false;
+
   currentRoom = room;
   role = asRole;
-  connectRetryCount = 0;
   setStatus('Connecting…', 'waiting');
 
   if (asRole === 'join') {
@@ -1056,6 +965,7 @@ function connectSignaling(room, asRole) {
   ws = new WebSocket(url);
   ws.onopen = () => {
     log('Signaling connected: ' + url);
+    signalingRegistered = true;
     ws.send(JSON.stringify({
       kind: 'register',
       roomId: currentRoom,
@@ -1063,9 +973,7 @@ function connectSignaling(room, asRole) {
       announce: true
     }));
     log('Registered room ' + currentRoom + ' as ' + role + ', id: ' + PLAYER_ID);
-    if (role === 'join') {
-      createJoinPeerConnection();
-    }
+    if (role === 'join') createJoinPeerConnection();
   };
   ws.onmessage = async e => {
     try {
@@ -1099,8 +1007,6 @@ function connectSignaling(room, asRole) {
         const target = others[0];
         pcRemoteId = target;
         if (role === 'host' && !hostOfferStarted) {
-          // give joiner time to finish createJoinPeerConnection
-          await new Promise(r => setTimeout(r, 200));
           await initHostPeer(target);
         }
         return;
@@ -1114,11 +1020,8 @@ function connectSignaling(room, asRole) {
         if (m.from === PLAYER_ID) return;
         if (m.from) pcRemoteId = m.from;
         const c = m.payload;
-        if (!pc || !pc.remoteDescription) {
-          pendingRemoteCandidates.push(c);
-        } else {
-          pc.addIceCandidate(c).catch(() => {});
-        }
+        if (!pc || !pc.remoteDescription) pendingRemoteCandidates.push(c);
+        else pc.addIceCandidate(c).catch(() => {});
         return;
       }
     } catch (err) {
@@ -1131,23 +1034,18 @@ function connectSignaling(room, asRole) {
   };
   ws.onclose = () => {
     log('Signaling closed');
-    if (peerWasConnected) {
-      schedulePeerOffline('Signaling disconnected');
+    if (keepAliveTimer) { clearInterval(keepAliveTimer); keepAliveTimer = null; }
+    if (peerWasConnected || (pc && pc.connectionState === 'connected')) {
+      scheduleDisconnect('Signaling disconnected');
     }
   };
 }
 
-// ——— UI actions ———
+/* ===== UI actions ===== */
 createBtn.addEventListener('click', () => {
   const room = roomInput.value.trim();
-  if (!selectedFile) {
-    alert('Please select a file first');
-    return;
-  }
-  if (room.length < 2) {
-    alert('Room name must be at least 2 characters');
-    return;
-  }
+  if (!selectedFile) { alert('Please select a file first'); return; }
+  if (room.length < 2) { alert('Room name must be at least 2 characters'); return; }
   connectSignaling(room, 'host');
 });
 
@@ -1177,7 +1075,7 @@ offlineBackBtn.addEventListener('click', () => {
 signalingUrl.addEventListener('change', saveUrl);
 signalingUrl.addEventListener('blur', saveUrl);
 
-// ——— Visibility / background recovery ———
+/* ===== Visibility recovery — same as web1 ===== */
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     log('Page went to background');
@@ -1198,7 +1096,7 @@ window.addEventListener('pagehide', () => {
   }
 });
 
-// ——— Boot ———
+/* ===== Boot ===== */
 loadSavedUrl();
 const params = getUrlParams();
 if (params.room) {
